@@ -10,16 +10,25 @@ export function TextField({
   error,
   containerStyle,
   inputStyle,
+  rightAccessory,
   ...inputProps
 }) {
   return (
     <View style={[styles.wrap, containerStyle]}>
       <Text style={styles.label}>{label}</Text>
-      <TextInput
-        placeholderTextColor={colors.textPlaceholder}
-        style={[styles.input, error ? styles.inputError : null, inputStyle]}
-        {...inputProps}
-      />
+      <View style={styles.inputRow}>
+        <TextInput
+          placeholderTextColor={colors.textPlaceholder}
+          style={[
+            styles.input,
+            rightAccessory ? styles.inputFlex : null,
+            error ? styles.inputError : null,
+            inputStyle,
+          ]}
+          {...inputProps}
+        />
+        {rightAccessory ? <View style={styles.accessory}>{rightAccessory}</View> : null}
+      </View>
       <View style={[styles.rule, error && styles.ruleError]} />
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
     </View>
@@ -50,9 +59,22 @@ const styles = StyleSheet.create({
   inputError: {
     color: colors.textPrimary,
   },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  inputFlex: {
+    flex: 1,
+    minWidth: 0,
+  },
+  accessory: {
+    marginLeft: 8,
+    marginBottom: 2,
+    justifyContent: 'center',
+  },
   rule: {
     height: StyleSheet.hairlineWidth * 2,
-    backgroundColor: colors.inputUnderline,
+    backgroundColor: colors.inputBorder,
     marginTop: 2,
   },
   ruleError: {

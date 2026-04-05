@@ -21,6 +21,8 @@ export function SignupScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [confirmVisible, setConfirmVisible] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
   const trimmedFirst = firstName.trim();
@@ -116,10 +118,25 @@ export function SignupScreen({ navigation }) {
                 value={password}
                 onChangeText={setPassword}
                 placeholder="Minimum 8 characters"
-                secureTextEntry
+                secureTextEntry={!passwordVisible}
                 textContentType="newPassword"
+                autoCorrect={false}
                 error={showErr('password')}
                 containerStyle={styles.fieldSpaced}
+                rightAccessory={
+                  <Pressable
+                    onPress={() => setPasswordVisible((v) => !v)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={passwordVisible ? 'Hide password' : 'Show password'}
+                  >
+                    <Ionicons
+                      name={passwordVisible ? 'eye-off-outline' : 'eye-outline'}
+                      size={22}
+                      color={colors.forest800}
+                    />
+                  </Pressable>
+                }
               />
 
               <TextField
@@ -127,10 +144,25 @@ export function SignupScreen({ navigation }) {
                 value={confirmPassword}
                 onChangeText={setConfirmPassword}
                 placeholder="Re-enter password"
-                secureTextEntry
+                secureTextEntry={!confirmVisible}
                 textContentType="newPassword"
+                autoCorrect={false}
                 error={showErr('confirm')}
                 containerStyle={styles.fieldSpaced}
+                rightAccessory={
+                  <Pressable
+                    onPress={() => setConfirmVisible((v) => !v)}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={confirmVisible ? 'Hide password' : 'Show password'}
+                  >
+                    <Ionicons
+                      name={confirmVisible ? 'eye-off-outline' : 'eye-outline'}
+                      size={22}
+                      color={colors.forest800}
+                    />
+                  </Pressable>
+                }
               />
             </View>
 

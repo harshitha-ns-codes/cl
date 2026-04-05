@@ -27,27 +27,36 @@ export function GroveSatelliteNode({ node, style, onCommitTap }) {
     opacity: 1,
   }));
 
+  /** Tap opens reading; pan only after movement so parent scroll/canvas can coexist. */
+  const tap = Gesture.Tap()
+    .onBegin(() => {
+      scale.value = withSpring(0.96, springConfig);
+    })
+    .onEnd(() => {
+      runOnJS(onCommitTap)();
+    })
+    .onFinalize(() => {
+      scale.value = withSpring(1, springConfig);
+    });
+
   const pan = Gesture.Pan()
+    .minDistance(14)
+    .onBegin(() => {
+      scale.value = withSpring(0.96, springConfig);
+    })
     .onUpdate((e) => {
       pullX.value = e.translationX * 0.45;
       pullY.value = e.translationY * 0.45;
     })
-    .onEnd((e) => {
-      const small = Math.abs(e.translationX) < 10 && Math.abs(e.translationY) < 10;
-      if (small) {
-        runOnJS(onCommitTap)();
-      }
+    .onEnd(() => {
       pullX.value = withSpring(0, springBack);
       pullY.value = withSpring(0, springBack);
     })
     .onFinalize(() => {
       scale.value = withSpring(1, springConfig);
-    })
-    .onBegin(() => {
-      scale.value = withSpring(0.96, springConfig);
     });
 
-  const g = pan;
+  const g = Gesture.Race(tap, pan);
 
   return (
     <GestureDetector gesture={g}>

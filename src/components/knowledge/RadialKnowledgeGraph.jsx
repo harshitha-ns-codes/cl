@@ -39,14 +39,16 @@ function computeOrbit(cx, cy, n, radius) {
 }
 
 /**
- * Living grove map: spring ring, pulsing edges, elastic node pull, preview sheet.
+ * Living grove map: spring ring, pulsing edges, elastic node pull, optional preview sheet.
+ * By default, tapping a branch calls onSelectSubtopic immediately (TopicContent / LLM reading).
+ * Set enableNodePreview to show the bottom sheet first (Generate reading / Immersive).
  */
 export function RadialKnowledgeGraph({
   centerLabel,
   subtopics = [],
   onSelectSubtopic,
   embedded = false,
-  enableNodePreview = true,
+  enableNodePreview = false,
   showImmersiveInPreview = true,
   onOpenImmersive,
   /** Larger canvas + pinch/pan wrapper (fullscreen grove). */

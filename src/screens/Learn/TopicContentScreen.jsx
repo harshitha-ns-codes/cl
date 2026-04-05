@@ -8,6 +8,9 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute, useNavigation } from '@react-navigation/native';
@@ -61,6 +64,8 @@ export function TopicContentScreen() {
   const recordingRef = useRef(null);
   const heardStoppingRef = useRef(false);
   const [readProgress, setReadProgress] = useState(0);
+  const [thoughtOpen, setThoughtOpen] = useState(false);
+  const [thoughtDraft, setThoughtDraft] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -119,16 +124,41 @@ export function TopicContentScreen() {
     }
   };
 
-  const onSaveThought = async () => {
+  const onSaveThoughtPress = () => {
+    setThoughtDraft('');
+    setThoughtOpen(true);
+  };
+
+  const onConfirmThought = async () => {
+    const t = thoughtDraft.trim();
+    if (!t) {
+      Alert.alert('Thought', 'Write something first.');
+      return;
+    }
     if (!article) return;
     setSaving(true);
     try {
-      const body = [plainBody, summary ? `\n\n— Summary —\n${summary}` : ''].join('');
+      const footer = [
+        '— Grove reading —',
+        `${subtopicLabel} · ${interestLabel}`,
+        article.title ? `Lesson: ${article.title}` : null,
+        summary ? `Your summary:\n${summary}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      const body = `${t}\n\n${footer}`;
       await saveTextNote({
-        title: `${subtopicLabel} · ${interestLabel}`,
+        title: `Thought · ${subtopicLabel}`.slice(0, 120),
         body,
-        meta: { interestId, subtopicId, subtopicLabel },
+        meta: {
+          interestId,
+          subtopicId,
+          subtopicLabel,
+          kind: 'grove_thought',
+        },
       });
+      setThoughtOpen(false);
+      setThoughtDraft('');
       Alert.alert('Saved', 'Added to Notes.');
     } catch {
       Alert.alert('Save', 'Could not save.');
@@ -277,7 +307,7 @@ export function TopicContentScreen() {
                   onStopListen={onStopListen}
                   onSummarize={onSummarize}
                   sumLoading={sumLoading}
-                  onSaveThought={onSaveThought}
+                  onSaveThought={onSaveThoughtPress}
                   saving={saving}
                   onSaveHeard={onSaveHeard}
                   heardActive={heardActive}
@@ -317,6 +347,45 @@ export function TopicContentScreen() {
           </View>
         </ScrollView>
       </View>
+
+      <Modal visible={thoughtOpen} animationType="slide" transparent>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalRoot}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setThoughtOpen(false)} />
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Save thought</Text>
+            <Text style={styles.modalSub}>
+              {subtopicLabel} · {interestLabel} — saved to Notes with this branch.
+            </Text>
+            <TextInput
+              value={thoughtDraft}
+              onChangeText={setThoughtDraft}
+              placeholder="What stayed with you?"
+              placeholderTextColor={colors.textPlaceholder}
+              multiline
+              style={styles.modalInput}
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={() => setThoughtOpen(false)} style={styles.modalBtnGhost}>
+                <Text style={styles.modalBtnGhostText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={onConfirmThought}
+                disabled={saving}
+                style={({ pressed }) => [
+                  styles.modalBtnPrimary,
+                  pressed && { opacity: 0.9 },
+                  saving && { opacity: 0.5 },
+                ]}
+              >
+                <Text style={styles.modalBtnPrimaryText}>{saving ? 'Saving…' : 'Save'}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -479,6 +548,66 @@ const styles = StyleSheet.create({
     fontSize: 22,
     color: colors.textDisplay,
     marginBottom: 10,
+  },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(20, 40, 30, 0.35)' },
+  modalSheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 22,
+    paddingTop: 20,
+    paddingBottom: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  modalTitle: {
+    fontFamily: fonts.displaySemibold,
+    fontSize: 22,
+    color: colors.textDisplay,
+    marginBottom: 6,
+  },
+  modalSub: {
+    fontFamily: fonts.body,
+    fontSize: 14,
+    lineHeight: 21,
+    color: colors.textSecondary,
+    marginBottom: 14,
+  },
+  modalInput: {
+    minHeight: 120,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    borderColor: colors.inputBorder,
+    borderRadius: 12,
+    padding: 14,
+    fontFamily: fonts.body,
+    fontSize: 16,
+    color: colors.textPrimary,
+    textAlignVertical: 'top',
+    marginBottom: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
+    alignItems: 'center',
+  },
+  modalBtnGhost: { paddingVertical: 12, paddingHorizontal: 16 },
+  modalBtnGhostText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 15,
+    color: colors.textMuted,
+  },
+  modalBtnPrimary: {
+    backgroundColor: colors.forest900,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    borderRadius: 12,
+  },
+  modalBtnPrimaryText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 15,
+    color: colors.onAccent,
   },
 });
 

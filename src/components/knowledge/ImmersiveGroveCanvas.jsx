@@ -22,7 +22,9 @@ export function ImmersiveGroveCanvas({ children, minScale = 0.65, maxScale = 2.4
       savedScale.value = scale.value;
     });
 
+  /** Let subtopic taps hit the graph first; only pan canvas after a clear drag. */
   const pan = Gesture.Pan()
+    .minDistance(24)
     .onUpdate((e) => {
       tx.value = savedTx.value + e.translationX;
       ty.value = savedTy.value + e.translationY;
