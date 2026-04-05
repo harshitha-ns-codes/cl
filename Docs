@@ -1,0 +1,435 @@
+# cl2 — Project documentation
+
+This document describes architecture, data flow, configuration, and extension points for the **cl2** mobile learning app (Expo / React Native) and its optional Python backend.
+
+---
+
+## 1. What the app does
+
+**cl2** is a calm, reading-focused experience that combines:
+
+- **Knowledge Grove** — Radial maps of **interests** and **subtopics**; tapping a subtopic opens a **generated lesson** (structured article with intro, sections, key points).
+- **Learn hub** — Three areas: **Grove** (maps + fullscreen immersive graph), **Ingest** (paste a URL → in-app WebView reader), **For you** (recommendations ranked from local article data + your stored interests).
+- **Reader tools** — Listen (TTS), Summarize (mock or future API), **Save thought** (modal → typed note), **Save heard** (short audio clip to Notes).
+- **Notes** — Text and audio notes stored locally; grouped/visualized by topic metadata.
+- **Profile** — Display name, email (local), edit interests, bookmarks, optional API sync.
+- **Home** — Dashboard-style entry with streaks/stats driven by local services.
+
+Authentication screens (**Onboarding**, **Login**, **Signup**, **Commute**, **Interests**) exist in the stack; in **`__DEV__`**, the app starts at **Main** tabs to speed up UI work.
+
+---
+
+## 2. Tech stack
+
+| Layer | Choices |
+|--------|---------|
+| Runtime | Expo SDK **~54**, React **19**, React Native **0.81** |
+| Navigation | `@react-navigation/native`, native stack + bottom tabs |
+| Gestures / motion | `react-native-gesture-handler`, `react-native-reanimated` **~4.1** |
+| Worklets | **`react-native-worklets@0.5.1`** (pinned for **Expo Go** compatibility; see §10) |
+| Storage | `@react-native-async-storage/async-storage` |
+| Backend (optional) | **Supabase** (Postgres + anon client); optional **Edge Function** `generate-topic` |
+| Optional API | **Flask** in `backend/` |
+| Fonts | **Inter** + **Cormorant** via `@expo-google-fonts/*` |
+| Other | `expo-speech`, `expo-av`, `expo-blur`, `expo-linear-gradient`, `react-native-webview`, `react-native-svg` |
+
+---
+
+## 3. Repository layout
+
+```
+cl2/
+├── App.js                 # Root: fonts, NavigationContainer, stack + tabs
+├── index.js               # Entry: reanimated, gesture-handler, registerRootComponent
+├── app.json               # Expo config, plugins
+├── babel.config.js        # expo preset + reanimated plugin (last)
+├── package.json
+├── supabase/
+│   └── knowledge_schema.sql   # interests + subtopics tables + seed
+├── backend/               # Optional Flask API
+│   ├── run.py
+│   └── app/               # routes, services, models, db
+└── src/
+    ├── theme/
+    │   ├── appTheme.js    # Single source: colors, fonts, layout, reading, tag tints
+    │   ├── colors.js      # Re-exports appTheme
+    │   ├── typography.js
+    │   ├── interestTagColors.js
+    │   └── index.js       # Barrel export
+    ├── lib/
+    │   └── supabase.js    # Client + isSupabaseConfigured()
+    ├── hooks/
+    │   └── useKnowledgeGraph.js
+    ├── navigation/
+    │   ├── LearnNavigator.jsx
+    │   ├── tabBarMetrics.js
+    │   └── resetToOnboarding.js
+    ├── data/
+    │   ├── knowledgeGraphData.js   # Local fallback interests/subtopics
+    │   └── recommendationsData.js    # Static articles for "For you"
+    ├── services/          # Business logic & I/O (see §6)
+    ├── screens/           # Feature screens (Auth, Learn, Home, Notes, Profile)
+    ├── components/      # UI (knowledge/, reader/, notes/, common/, dev/)
+    └── utils/
+```
+
+---
+
+## 4. Navigation model
+
+### Root stack (`App.js`)
+
+| Screen | Role |
+|--------|------|
+| `Onboarding` | First-run story (production entry) |
+| `Login` / `Signup` | Auth placeholders |
+| `Commute` | Preference step |
+| `Interests` | Pick topics (`mode: 'edit'` from Profile) |
+| `Main` | Bottom tab navigator |
+
+**`initialRouteName`**: `Main` when `__DEV__`, else `Onboarding`.
+
+### Main tabs
+
+| Tab | Component |
+|-----|-----------|
+| Home | `HomeScreen` |
+| Learn | `LearnNavigator` (stack) |
+| Notes | `NotesScreen` |
+| Profile | `ProfileScreen` |
+
+### Learn stack (`LearnNavigator.jsx`)
+
+| Route | Screen |
+|-------|--------|
+| `LearnMain` | `LearnScreen` (Grove / Ingest / For you) |
+| `KnowledgeGraph` | Fullscreen immersive grove |
+| `TopicContent` | LLM / mock lesson for one subtopic |
+| `IngestReader` | WebView + reader chrome |
+| `RecommendedArticle` | Article from For you feed |
+
+**Params examples**
+
+- `TopicContent`: `{ interestId, interestLabel, subtopicId, subtopicLabel }`
+- `KnowledgeGraph`: `{ interestId }`
+- `IngestReader`: `{ url }`
+- `RecommendedArticle`: `{ article }` (object from recommendations data)
+
+---
+
+## 5. Feature flows
+
+### 5.1 Knowledge graph (Grove): catalog → tap subtopic → LLM lesson (deep dive)
+
+Reference for how the grove is wired: data sources, UI components, navigation, and where generated lesson text is produced. The file list in §5.1.10 maps topics to paths in the repo.
+
+#### 5.1.1 What the “knowledge graph” is in this project
+
+It is **not** a general-purpose graph database. In cl2 it means:
+
+- One **interest** (e.g. Science) is the **center** of a radial UI.
+- Several **subtopics** (e.g. Cosmology, Genetics) are **satellite nodes** on an orbit, connected to the center with animated edges.
+- Each subtopic is a plain object **`{ id: string, label: string }`** used as a stable key for navigation and for LLM prompts.
+
+The visual implementation lives under **`src/components/knowledge/`** (SVG edges, Reanimated, gesture-handler). The **catalog** (which interests exist and which subtopics belong to each) comes from **local JS** and/or **Supabase tables** — see below.
+
+#### 5.1.2 Data model (what a “node” is)
+
+| Concept | Shape | Example |
+|---------|--------|---------|
+| Interest option | `{ id, label }` | `{ id: 'science', label: 'Science' }` |
+| Subtopic node | `{ id, label }` | `{ id: 'cosmology', label: 'Cosmology' }` |
+
+- **`id`** — stable string; used in URLs/params, Supabase PKs, and `meta` on saved notes.
+- **`label`** — human-readable title shown on pills and the lesson screen.
+
+Local seed data: **`src/data/knowledgeGraphData.js`** (`INTEREST_OPTIONS`, `SUBTOPICS_BY_INTEREST`).  
+Supabase mirror: **`supabase/knowledge_schema.sql`** (`interests`, `subtopics` with the same `id` / `interest_id` semantics).
+
+#### 5.1.3 Where catalog data is loaded (`useKnowledgeGraph`)
+
+**File:** `src/hooks/useKnowledgeGraph.js`
+
+1. On mount, state is initialized from **`getLocalKnowledgeGraph()`** in **`src/services/knowledgeSupabase.js`** (reads **`knowledgeGraphData.js`**).
+2. If **`isSupabaseConfigured()`** (`src/lib/supabase.js` + `EXPO_PUBLIC_SUPABASE_*`), it **fetches** **`fetchKnowledgeGraphFromSupabase()`** (same file) and replaces `interestOptions` / `subtopicsByInterest`.
+3. Exposes **`getSubtopicsForInterest(interestId)`**, **`getInterestLabel(interestId)`**, plus **`source`** (`'local' | 'supabase'`), **`loading`**, **`error`**.
+
+**Learn tab** (`src/screens/Learn/LearnScreen.jsx`) filters interests to the user’s **stored picks** from **`getStoredInterests()`** (`src/services/localProfileStorage.js`) so the grove only shows topics they chose in onboarding / Profile.
+
+#### 5.1.4 UI: embedded grove vs fullscreen immersive
+
+| Mode | Screen / usage | Key props / files |
+|------|----------------|-------------------|
+| **Embedded** | `LearnScreen` → horizontal `FlatList` pager, one graph per interest | `RadialKnowledgeGraph` with `embedded`, `centerLabel`, `subtopics`, `onSelectSubtopic` |
+| **Fullscreen** | `KnowledgeGraphScreen` (`LearnNavigator` route `KnowledgeGraph`) | `RadialKnowledgeGraph` with **`immersiveMode`**, **`showImmersiveInPreview={false}`** |
+
+**Core graph component:** `src/components/knowledge/RadialKnowledgeGraph.jsx`
+
+- Renders gradient “grove” background, **`GroveVeinTexture`**, **`PulsingEdge`** lines from center to each subtopic, **`GroveSatelliteNode`** per subtopic, center **`Pressable`** to fold/expand the ring.
+- **`enableNodePreview`** (default **`false`**): when `false`, a tap **immediately** calls **`onSelectSubtopic(node)`** (no extra “Generate reading” sheet). When `true`, opens **`GroveBranchPreviewSheet`** first.
+- **`onOpenImmersive`** + **`showImmersiveInPreview`**: optional sheet actions (e.g. jump to fullscreen graph).
+
+**Immersive canvas:** `src/components/knowledge/ImmersiveGroveCanvas.jsx` — pinch + pan; **`Pan.minDistance(24)`** so single-finger **taps** on subtopics are handled by child nodes, not eaten by the canvas.
+
+#### 5.1.5 Gesture: what happens when you tap a subtopic
+
+**File:** `src/components/knowledge/GroveSatelliteNode.jsx`
+
+- Uses **`Gesture.Race(Gesture.Tap(), Gesture.Pan().minDistance(14))`**.
+- **Quick tap** → **`onCommitTap()`** → parent passes through to **`handleNodeTap`** in **`RadialKnowledgeGraph`** → **`onSelectSubtopic?.(node)`**.
+- **Drag** → elastic pull + spring back (no navigation).
+
+This avoids the older “pan end + tiny movement” heuristic, which failed when nested in horizontal scroll or immersive pan.
+
+#### 5.1.6 Navigation: from subtopic tap to the lesson screen
+
+**Embedded path (`LearnScreen.jsx`):**  
+`openTopicForInterest(interestId, node)` → `navigation.navigate('TopicContent', { interestId, interestLabel: getInterestLabel(interestId), subtopicId: node.id, subtopicLabel: node.label })`.
+
+**Fullscreen path (`KnowledgeGraphScreen.jsx`):**  
+Same pattern with the screen’s resolved `interestId` / labels.
+
+**Stack registration:** `src/navigation/LearnNavigator.jsx` maps **`TopicContent`** → **`TopicContentScreen`**.
+
+**Secondary UI:** Horizontal **branch chips** under the graph also call the same `openTopicForInterest` — redundant with tapping nodes; useful if gestures misbehave on a device.
+
+#### 5.1.7 Loading “LLM” content on the lesson screen
+
+**File:** `src/screens/Learn/TopicContentScreen.jsx`
+
+1. Reads **`route.params`**: `interestId`, `interestLabel`, `subtopicId`, `subtopicLabel`.
+2. **`useEffect`** → **`generateTopicContent({ interestId, interestLabel, subtopicId, subtopicLabel })`** from **`src/services/llmService.js`**.
+3. While loading: spinner + “Composing your lesson…”.
+4. On success: renders **`article.title`**, **`article.introduction`**, **`article.breakdown[]`** (heading + text), **`article.keyPoints[]`**, then **`ReaderActionsPanel`**, **`ReadingProgressBar`**, save-thought **modal**, TTS, summarize, save heard.
+
+So: **subtopic tap does not fetch text inside the graph** — it only navigates with **ids/labels**; **all generation** happens on **`TopicContentScreen`**.
+
+#### 5.1.8 Article JSON shape (contract for real LLM / Edge Function)
+
+**Consumer:** `TopicContentScreen.jsx` and **`articleToPlainText()`** in `llmService.js`.
+
+Minimum useful shape (extend as you like; update UI if you add fields):
+
+```json
+{
+  "title": "string",
+  "introduction": "string",
+  "breakdown": [
+    { "heading": "string", "text": "string" }
+  ],
+  "keyPoints": ["string", "string"]
+}
+```
+
+**Remote path:** `llmService.js` → **`supabase.functions.invoke('generate-topic', { body })`** with body:
+
+```json
+{
+  "interestId": "science",
+  "interestLabel": "Science",
+  "subtopicId": "cosmology",
+  "subtopicLabel": "Cosmology"
+}
+```
+
+The Edge Function (you implement in Supabase) should return JSON that passes the check in **`tryEdgeGenerateTopic`** (expects `data.introduction` as string at minimum). If invoke fails or Supabase is off, **`buildMockArticle`** fills the same shape locally.
+
+**Summarize:** `summarizeContent()` is still **mock** in `llmService.js` — separate from `generate-topic`.
+
+#### 5.1.9 End-to-end flow (diagram)
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Grove as RadialKnowledgeGraph
+  participant Node as GroveSatelliteNode
+  participant Nav as React Navigation
+  participant Topic as TopicContentScreen
+  participant LLM as llmService.generateTopicContent
+  participant SB as Supabase Edge (optional)
+
+  User->>Node: Tap subtopic
+  Node->>Grove: onCommitTap → handleNodeTap
+  Grove->>Nav: onSelectSubtopic(node)
+  Nav->>Topic: navigate TopicContent + params
+  Topic->>LLM: generateTopicContent(params)
+  alt Supabase configured
+    LLM->>SB: invoke generate-topic
+    SB-->>LLM: article JSON
+  else fallback
+    LLM-->>Topic: buildMockArticle
+  end
+  Topic->>User: Render lesson + reader actions
+```
+
+#### 5.1.10 Key files (grove + lesson pipeline)
+
+| Path | Role |
+|------|------|
+| `src/hooks/useKnowledgeGraph.js` | Catalog loading, local vs Supabase |
+| `src/services/knowledgeSupabase.js` | `fetchKnowledgeGraphFromSupabase`, local fallback |
+| `src/data/knowledgeGraphData.js` | Offline interests + subtopics |
+| `supabase/knowledge_schema.sql` | DB schema + seed alignment |
+| `src/screens/Learn/LearnScreen.jsx` | Pager, `RadialKnowledgeGraph`, `openTopicForInterest` |
+| `src/screens/Learn/KnowledgeGraphScreen.jsx` | Fullscreen immersive route |
+| `src/navigation/LearnNavigator.jsx` | Stack routes including `TopicContent` |
+| `src/components/knowledge/RadialKnowledgeGraph.jsx` | Graph layout, `onSelectSubtopic`, optional preview sheet |
+| `src/components/knowledge/GroveSatelliteNode.jsx` | Tap vs pan on a subtopic |
+| `src/components/knowledge/ImmersiveGroveCanvas.jsx` | Pinch/pan; pan `minDistance` so taps reach nodes |
+| `src/components/knowledge/GroveBranchPreviewSheet.jsx` | Optional bottom sheet before navigation |
+| `src/components/knowledge/PulsingEdge.jsx` | Edge animation |
+| `src/screens/Learn/TopicContentScreen.jsx` | Lesson screen, consumes route params, renders article |
+| `src/services/llmService.js` | `generateTopicContent`, Edge invoke, mock article |
+| `src/lib/supabase.js` | Supabase client from env |
+
+Broader change ideas (summaries, auth, feed, bookmarks) are listed in **§12 Extension points**.
+
+---
+
+### 5.2 Generated content (`llmService.js`) — summary
+
+(Full contract, params, and JSON shape: **§5.1.7–5.1.8**.)
+
+- If Supabase is configured, invokes **`supabase.functions.invoke('generate-topic', { body })`**.
+- Expected successful payload: object with at least string **`introduction`** (and typically `title`, `breakdown[]`, `keyPoints[]` matching `articleToPlainText` / UI).
+- If the function fails or Supabase is off: **mock article** from `buildMockArticle(interestLabel, subtopicLabel)` after a short delay.
+
+**`summarizeContent`**: currently **mock** (template summary); replace with Edge Function or external API when ready.
+
+### 5.3 For you feed
+
+- Articles live in `src/data/recommendationsData.js`.
+- `getRecommendedArticles(interests, seenIds)` (`recommendationEngine.js`) ranks by tag overlap with user interests, slight penalty for seen IDs, small random jitter.
+- `LearnScreen` loads `getStoredInterests()` + `getSeenArticleIds()` on focus.
+
+### 5.4 Ingest reader
+
+- User enters URL → `IngestReaderScreen` loads **`react-native-webview`**.
+- Same reader actions as topic/article screens (listen, summarize, save thought modal, save heard).
+
+### 5.5 Notes
+
+- `notesStorage.js`: AsyncStorage key **`@cl2_notes_v1`**; array of `{ id, type: 'text'|'audio', title, body?, audioUri?, meta, createdAt }`.
+- Text notes from grove use `meta.kind: 'grove_thought'` and interest/subtopic ids when applicable.
+- `NotesScreen` / `NotesMindMap` consume `getAllNotes()` and group by meta/topic utilities.
+
+### 5.6 Profile & sync
+
+- **Local**: interests, display name, email, seen articles, bookmarks (`localProfileStorage.js`).
+- **Optional API** (`apiClient.js`): if `EXPO_PUBLIC_API_URL` is set, bookmark/history/profile calls may hit Flask (see §8). Failures are generally non-fatal; local bookmarks still work.
+
+---
+
+## 6. Services reference
+
+| Module | Responsibility |
+|--------|----------------|
+| `lib/supabase.js` | `getSupabase()`, `isSupabaseConfigured()` from `EXPO_PUBLIC_*` |
+| `knowledgeSupabase.js` | `getLocalKnowledgeGraph()`, `fetchKnowledgeGraphFromSupabase()` |
+| `llmService.js` | `generateTopicContent`, `summarizeContent`, `articleToPlainText` |
+| `notesStorage.js` | `getAllNotes`, `saveTextNote`, `saveAudioNote` |
+| `localProfileStorage.js` | User id, interests, profile fields, seen articles, bookmarks |
+| `recommendationEngine.js` | `rankRecommendations`, `getRecommendedArticles` |
+| `apiClient.js` | Optional REST to Flask (`postHistory`, `postBookmark`, etc.) |
+| `localStreak.js` / `localReadingStats.js` | Home / stats |
+| `sessionSignOut.js` | Clear session-related storage if used |
+
+---
+
+## 7. Supabase
+
+### Client (Expo)
+
+- Env: **`EXPO_PUBLIC_SUPABASE_URL`**, **`EXPO_PUBLIC_SUPABASE_ANON_KEY`** (project root `.env`).
+- RLS-aware **read** of `interests` and `subtopics` matches `knowledge_schema.sql`.
+
+### Schema (`supabase/knowledge_schema.sql`)
+
+- **`interests`**: `id` (text PK), `label`, `sort_order`
+- **`subtopics`**: `id`, `interest_id` → `interests.id`, `label`, `sort_order`
+- Policies: **SELECT** allowed for anon (read-only catalog)
+
+### Edge Function (optional)
+
+- Name: **`generate-topic`**
+- Invoked from app with JSON body: `{ interestId, interestLabel, subtopicId, subtopicLabel }`
+- Should return JSON compatible with lesson UI (see `llmService` and `TopicContentScreen`).
+
+---
+
+## 8. Optional Flask backend (`backend/`)
+
+- **Run**: `python run.py` → default `http://127.0.0.1:5000`
+- **App env**: separate from Expo (e.g. `DATABASE_URL`, keys in `backend/.env` if used).
+- **Routes** (see `app/api/routes.py`): profile GET/PUT, history POST/GET, bookmark POST/DELETE/GET, streak, analytics, etc.
+- **Mobile**: set **`EXPO_PUBLIC_API_URL`** to a reachable host (LAN IP for physical device).
+
+---
+
+## 9. Theming
+
+All visual tokens for the React app live in **`src/theme/appTheme.js`**:
+
+- **`colors`** — palette
+- **`fonts`** — keys must match `useFonts()` in `App.js`
+- **`layout`** — `pagePadding`, `contentMax`, `fieldGap`
+- **`reading`** — longform reader typography
+- **Interest tag colors** — `tagColorsForInterestId`, `tagColorsForTagString`
+
+`colors.js`, `typography.js`, and `interestTagColors.js` re-export for backward compatibility. You may also `import { colors, fonts, ... } from './theme'`.
+
+---
+
+## 10. Native modules & Expo Go
+
+- **Reanimated** requires `babel.config.js` to list **`react-native-reanimated/plugin` last**.
+- **`index.js`** imports **`react-native-reanimated`** before other RN imports.
+- **`react-native-worklets`** is pinned to **0.5.1** (with npm **overrides**) to match **Expo Go** for SDK 54. Changing Reanimated/worklets without aligning to Expo’s bundled versions may cause runtime errors (e.g. TurboModule / worklets mismatch). Custom dev clients can use versions documented for your SDK.
+
+---
+
+## 11. Important files quick map
+
+| File | Why it matters |
+|------|----------------|
+| `App.js` | Navigation tree, fonts, dev initial route |
+| `src/screens/Learn/LearnScreen.jsx` | Grove pager, ingest, for-you list |
+| `src/components/knowledge/RadialKnowledgeGraph.jsx` | Graph, preview sheet, immersive flag |
+| `src/components/knowledge/GroveSatelliteNode.jsx` | Tap vs pan for subtopic nodes |
+| `src/components/knowledge/ImmersiveGroveCanvas.jsx` | Pinch/pan; `minDistance` on pan for taps |
+| `src/screens/Learn/TopicContentScreen.jsx` | Lesson load, reader UI, save-thought modal |
+| `src/components/reader/ReaderActionsPanel.jsx` | Listen / Stop / Summarize / Save thought / Save heard |
+| `src/hooks/useKnowledgeGraph.js` | Catalog source + loading state |
+| `src/data/knowledgeGraphData.js` | Offline catalog mirror |
+| `src/theme/appTheme.js` | Global design tokens |
+
+---
+
+## 12. Extension points
+
+1. **Real summaries** — Replace `summarizeContent` in `llmService.js` (or add Edge Function + invoke).
+2. **Stronger auth** — Wire Login/Signup to Supabase Auth or another provider; persist session via existing `supabase` client `auth` config.
+3. **Dynamic For you** — Replace or supplement `recommendationsData.js` with API-fed articles; keep `recommendationEngine` interface or swap `getRecommendedArticles`.
+4. **Bookmarks / history** — Already dual: local + optional Flask; extend `apiClient` for your backend.
+5. **New interests** — Update Supabase seed + RLS; keep `id` strings stable or migrate app references.
+
+---
+
+## 13. Scripts
+
+| Command | Use |
+|---------|-----|
+| `npm start` | Expo dev server |
+| `npm run start:clear` | Clear Metro cache |
+| `npm run android` / `ios` / `web` | Platform shortcuts |
+
+---
+
+## 14. Related docs
+
+- **`README.md`** — Install, env vars, quick run instructions.
+- **`supabase/knowledge_schema.sql`** — Database DDL + seed comments.
+
+---
+
+*Generated for the cl2 codebase; update this file when architecture or env contracts change.*
